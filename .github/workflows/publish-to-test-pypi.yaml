@@ -1,11 +1,23 @@
 name: Publish Python distributions to TestPyPI
 
+# Validation runs on workflow changes and by default when started manually.
+# To upload, select publish when starting manually, or publish a release.
 # Add a repository Actions secret named TEST_PYPI_API_TOKEN containing a
 # TestPyPI API token (a production PyPI token will not work).
 # The package version comes from setup.py. Existing uploads are skipped;
 # publishing changed distributions requires a new version in setup.py.
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-to-test-pypi.yaml'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload to TestPyPI after validation (requires TEST_PYPI_API_TOKEN)
+        required: true
+        type: boolean
+        default: false
   release:
     types: [published]
 
@@ -18,7 +30,7 @@ concurrency:
 
 jobs:
   publish:
-    name: Build, validate, and publish to TestPyPI
+    name: Build, validate, and optionally publish to TestPyPI
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -27,15 +39,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
-
-      - name: Validate TestPyPI token configuration
-        env:
-          TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
-        run: |
-          if [[ -z "$TEST_PYPI_API_TOKEN" ]]; then
-            echo "::error::Add the TEST_PYPI_API_TOKEN repository Actions secret using a token from https://test.pypi.org/manage/account/token/"
-            exit 1
-          fi
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -64,7 +67,18 @@ jobs:
           "$RUNNER_TEMP/testpypi-install/bin/python" -m pip install -r requirements.txt dist/*.whl
           "$RUNNER_TEMP/testpypi-install/bin/python" -m pip check
 
+      - name: Validate TestPyPI token configuration
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+        env:
+          TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+        run: |
+          if [[ -z "$TEST_PYPI_API_TOKEN" ]]; then
+            echo "::error::Publishing requires the TEST_PYPI_API_TOKEN repository Actions secret. Add a token from https://test.pypi.org/manage/account/token/ under Settings > Secrets and variables > Actions. To validate without uploading, run this workflow with publish unchecked."
+            exit 1
+          fi
+
       - name: Publish distributions to TestPyPI
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
@@ -73,3 +87,9 @@ jobs:
           packages-dir: dist/
           skip-existing: true
           attestations: false
+
+      - name: Report validation-only result
+        if: github.event_name != 'release' && !(github.event_name == 'workflow_dispatch' && inputs.publish)
+        run: |
+          echo "Build, strict metadata checks, package installation, and dependency checks passed. No TestPyPI upload was requested." >> "$GITHUB_STEP_SUMMARY"
+          echo "To publish, add the TEST_PYPI_API_TOKEN repository Actions secret and run this workflow with publish checked." >> "$GITHUB_STEP_SUMMARY"
